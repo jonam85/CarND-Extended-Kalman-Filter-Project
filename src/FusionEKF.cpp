@@ -11,6 +11,7 @@ using std::vector;
 /*
  * Constructor.
  */
+
 FusionEKF::FusionEKF() {
   is_initialized_ = false;
 
@@ -30,12 +31,20 @@ FusionEKF::FusionEKF() {
   R_radar_ << 0.09, 0, 0,
         0, 0.0009, 0,
         0, 0, 0.09;
+        
+  H_laser_ << 1, 0, 0, 0,
+              0, 1, 0, 0;
 
   /**
   TODO:
     * Finish initializing the FusionEKF.
     * Set the process and measurement noises
   */
+
+  //set the acceleration noise components
+  noise_ax = 9;
+  noise_ay = 9;
+  
 
 
 }
@@ -51,6 +60,15 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
   /*****************************************************************************
    *  Initialization
    ****************************************************************************/
+   
+    //compute the time elapsed between the current and previous measurements
+  float dt = (measurement_pack.timestamp_ - previous_timestamp_) / 1000000.0; //dt - expressed in seconds
+  previous_timestamp_ = measurement_pack.timestamp_;
+  
+  //Check if the delta time is > 3 secs and reset
+  if((dt > 3) || (dt < 0))
+    is_initialized_ = false;
+   
   if (!is_initialized_) {
     /**
     TODO:
@@ -58,24 +76,58 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
       * Create the covariance matrix.
       * Remember: you'll need to convert radar from polar to cartesian coordinates.
     */
+    //set the state with the initial location and zero velocity
+    
     // first measurement
     cout << "EKF: " << endl;
     ekf_.x_ = VectorXd(4);
     ekf_.x_ << 1, 1, 1, 1;
+    
+    ekf_.P_ =  MatrixXd(4, 4);
+    ekf_.P_ << 0.01, 0, 0, 0,
+               0, 0.01, 0, 0,
+               0, 0, 1, 0,
+               0, 0, 0, 1;
+               
+    ekf_.F_ =  MatrixXd(4, 4);             
+    ekf_.F_ << 1, 0, 0, 0,
+               0, 1, 0, 0,
+               0, 0, 1, 0,
+               0, 0, 0, 1;
 
     if (measurement_pack.sensor_type_ == MeasurementPackage::RADAR) {
       /**
       Convert radar from polar to cartesian coordinates and initialize state.
       */
+      float rho;
+      float theta;
+      float rho_dot;
+      rho = measurement_pack.raw_measurements_[0];
+      theta = measurement_pack.raw_measurements_[1];
+      rho_dot = measurement_pack.raw_measurements_[2];
+      
+      ekf_.x_ << rho*cos(theta), rho*sin(theta), rho_dot*cos(theta), rho_dot*sin(theta);
+      is_initialized_ = true;
     }
-    else if (measurement_pack.sensor_type_ == MeasurementPackage::LASER) {
-      /**
-      Initialize state.
-      */
+    else 
+
+    {
+
+      if (measurement_pack.sensor_type_ == MeasurementPackage::LASER) {
+        /**
+        Initialize state.
+        */
+        ekf_.x_ << measurement_pack.raw_measurements_[0], measurement_pack.raw_measurements_[1], 0, 0;
+        is_initialized_ = true;
+  
+      }
+
     }
+    
+    previous_timestamp_ = measurement_pack.timestamp_;
 
     // done initializing, no need to predict or update
-    is_initialized_ = true;
+    
     return;
   }
 
@@ -91,6 +143,23 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
      * Use noise_ax = 9 and noise_ay = 9 for your Q matrix.
    */
 
+
+  float dt_2 = dt * dt;
+  float dt_3 = dt_2 * dt;
+  float dt_4 = dt_3 * dt;
+
+  //Modify the F matrix so that the time is integrated
+  ekf_.F_(0, 2) = dt;
+  ekf_.F_(1, 3) = dt;
+
+  //set the process covariance matrix Q
+  ekf_.Q_ = MatrixXd(4, 4);
+  ekf_.Q_ <<  dt_4/4*noise_ax, 0, dt_3/2*noise_ax, 0,
+         0, dt_4/4*noise_ay, 0, dt_3/2*noise_ay,
+         dt_3/2*noise_ax, 0, dt_2*noise_ax, 0,
+         0, dt_3/2*noise_ay, 0, dt_2*noise_ay;
+
+  //predict
   ekf_.Predict();
 
   /*****************************************************************************
@@ -103,10 +172,23 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
      * Update the state and covariance matrices.
    */
 
+
+  //measurement update
+
   if (measurement_pack.sensor_type_ == MeasurementPackage::RADAR) {
+
     // Radar updates
+      ekf_.H_ = tools.CalculateJacobian(ekf_.x_);
+      ekf_.R_ = R_radar_;
+      ekf_.UpdateEKF(measurement_pack.raw_measurements_);
+
   } else {
+
     // Laser updates
+      ekf_.H_ = H_laser_;
+      ekf_.R_ = R_laser_;
+      ekf_.Update(measurement_pack.raw_measurements_);
+
   }
 
   // print the output
